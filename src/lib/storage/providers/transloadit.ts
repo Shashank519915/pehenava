@@ -136,7 +136,7 @@ export class TransloaditProvider implements StorageProvider {
     formData.append('signature', signature);
     formData.append(
       'file',
-      new Blob([file], { type: mimeType }),
+      new Blob([new Uint8Array(file)], { type: mimeType }),
       fileName
     );
 
