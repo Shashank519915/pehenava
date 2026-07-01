@@ -1,18 +1,46 @@
 'use client';
 
-import React, { useActionState, Suspense } from 'react';
+import React, { useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { authenticate } from '@/server/auth';
+import { signIn } from 'next-auth/react';
 
 function LoginForm() {
-  const [errorMessage, formAction, isPending] = useActionState(
-    authenticate,
-    undefined
-  );
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isPending, setIsPending] = useState(false);
   const [showPassword, setShowPassword] = React.useState(false);
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get('callbackUrl') || '/dashboard';
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setIsPending(true);
+    setErrorMessage(null);
+
+    const formData = new FormData(e.currentTarget);
+    const email = formData.get('email') as string;
+    const password = formData.get('password') as string;
+
+    try {
+      const res = await signIn('credentials', {
+        email,
+        password,
+        redirect: false,
+      });
+
+      if (res?.error) {
+        setErrorMessage('Invalid email or password.');
+      } else {
+        // Successful login: perform a full window reload to clear client cache 
+        // and instantly re-render header/sidebar with correct role-based permissions.
+        window.location.href = callbackUrl;
+      }
+    } catch (err: any) {
+      setErrorMessage('Something went wrong. Please try again.');
+    } finally {
+      setIsPending(false);
+    }
+  };
 
   return (
     <div className="w-full max-w-md bg-white border border-border-brand/80 shadow-large rounded-[36px] p-6 sm:p-10 relative z-10">
@@ -25,8 +53,7 @@ function LoginForm() {
         <span className="text-text-secondary text-[10px] uppercase tracking-widest font-bold">Accounting Workspace</span>
       </div>
 
-      <form action={formAction} className="space-y-6">
-        {/* Hidden callbackUrl so the server action knows where to redirect after login */}
+      <form onSubmit={handleSubmit} className="space-y-6">
         <input type="hidden" name="callbackUrl" value={callbackUrl} />
         <div>
           <label className="block text-xs font-semibold text-text-secondary mb-2 uppercase tracking-wider" htmlFor="email">
@@ -130,4 +157,5 @@ export default function LoginPage() {
     </div>
   );
 }
+
 
