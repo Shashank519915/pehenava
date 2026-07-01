@@ -1,0 +1,314 @@
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  directUrl         = env("DATABASE_URL_DIRECT")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  ADMIN
+  ACCOUNTANT
+  MAINTAINER
+  EMPLOYEE
+  READ_ONLY
+}
+
+enum TransactionType {
+  SALE
+  PURCHASE
+  EXPENSE
+  INCOME
+  RECEIPT
+  PAYMENT
+  CONTRA
+}
+
+enum PaymentMode {
+  CASH
+  BANK
+  UPI
+}
+
+enum TransactionStatus {
+  DRAFT
+  POSTED
+  CORRECTION_REQUESTED
+  CORRECTED
+  VOIDED
+  SUPERSEDED
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+  COST_OF_GOODS
+}
+
+enum PartyType {
+  CUSTOMER
+  SUPPLIER
+}
+
+enum NormalBalance {
+  DEBIT
+  CREDIT
+}
+
+enum CorrectionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AuditEventType {
+  AUTH_LOGIN_SUCCESS
+  AUTH_LOGIN_FAILURE
+  AUTH_LOGOUT
+  AUTH_PASSWORD_RESET
+  AUTH_SESSION_REVOKED
+  USER_CREATED
+  USER_UPDATED
+  USER_DEACTIVATED
+  USER_ROLE_CHANGED
+  TRANSACTION_CREATED
+  TRANSACTION_CORRECTION_REQUESTED
+  TRANSACTION_CORRECTION_APPROVED
+  TRANSACTION_CORRECTION_REJECTED
+  TRANSACTION_VOIDED
+  TRANSACTION_EXPORTED
+  REPORT_VIEWED
+  REPORT_EXPORTED
+  FINANCIAL_YEAR_CREATED
+  FINANCIAL_YEAR_OPENED
+  FINANCIAL_YEAR_CLOSED
+  ACCOUNT_CREATED
+  ACCOUNT_UPDATED
+  ACCOUNT_DEACTIVATED
+  SETTINGS_CHANGED
+  BACKUP_INITIATED
+  PERMISSION_CHANGED
+}
+
+model User {
+  id                 String              @id @default(cuid())
+  email              String              @unique
+  name               String
+  passwordHash       String
+  role               Role                @default(EMPLOYEE)
+  isActive           Boolean             @default(true)
+  failedLoginAttempts Int                @default(0)
+  lockedUntil        DateTime?
+  sessions           Session[]
+  transactions       Transaction[]       @relation("CreatedTransactions")
+  correctionRequests CorrectionRequest[] @relation("Requester")
+  reviewedCorrections CorrectionRequest[] @relation("Reviewer")
+  auditLogs          AuditLog[]
+  lastLoginAt        DateTime?
+  profileImage       String?
+  resetPasswordToken String?
+  resetPasswordExpires DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+}
+
+model Session {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id])
+  token             String   @unique
+  ipAddress         String
+  userAgent         String
+  deviceFingerprint String
+  expiresAt         DateTime
+  createdAt         DateTime @default(now())
+
+  @@index([userId])
+}
+
+model FinancialYear {
+  id             String           @id @default(cuid())
+  name           String           @unique // e.g. "FY 2024-25"
+  startDate      DateTime
+  endDate        DateTime
+  isActive       Boolean          @default(false)
+  isClosed       Boolean          @default(false)
+  transactions   Transaction[]
+  balances       AccountBalance[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+}
+
+model Account {
+  id             String           @id @default(cuid())
+  code           String           @unique
+  name           String           @unique
+  type           AccountType
+  normalBalance  NormalBalance
+  isSystem       Boolean          @default(false)
+  isDeleted      Boolean          @default(false)
+  transactions   Transaction[]    @relation("AccountTransactions")
+  journalEntries JournalEntry[]
+  balances       AccountBalance[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+}
+
+model AccountBalance {
+  id              String        @id @default(cuid())
+  accountId       String
+  account         Account       @relation(fields: [accountId], references: [id])
+  financialYearId String
+  financialYear   FinancialYear @relation(fields: [financialYearId], references: [id])
+  openingBalance  Decimal       @db.Decimal(15, 2)
+  closingBalance  Decimal       @db.Decimal(15, 2)
+  createdAt       DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([accountId, financialYearId])
+}
+
+model Party {
+  id             String          @id @default(cuid())
+  name           String
+  type           PartyType
+  phone          String?
+  email          String?
+  gstin          String?
+  address        String?
+  creditLimit    Decimal?        @db.Decimal(15, 2)
+  isDeleted      Boolean         @default(false)
+  transactions   Transaction[]
+  journalEntries JournalEntry[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([phone, type])
+}
+
+model Transaction {
+  id                  String             @id @default(cuid())
+  version             Int                @default(1)
+  parentId            String?            // Self-relation for correction history chain
+  parent              Transaction?       @relation("TxnChain", fields: [parentId], references: [id])
+  children            Transaction[]      @relation("TxnChain")
+  type                TransactionType
+  date                DateTime
+  amount              Decimal            @db.Decimal(15, 2)
+  paymentMode         PaymentMode
+  accountId           String
+  account             Account            @relation("AccountTransactions", fields: [accountId], references: [id])
+  partyId             String?
+  party               Party?             @relation(fields: [partyId], references: [id])
+  description         String
+  referenceNumber     String?
+  financialYearId     String
+  financialYear       FinancialYear      @relation(fields: [financialYearId], references: [id])
+  createdById         String
+  createdBy           User               @relation("CreatedTransactions", fields: [createdById], references: [id])
+  status              TransactionStatus  @default(POSTED)
+  gstDetails          Json?              // Reserved for Phase 2 GST readiness
+  attachments         Attachment[]
+  journalEntries      JournalEntry[]
+  correctionRequests  CorrectionRequest[] @relation("TargetTransaction")
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@index([financialYearId])
+  @@index([status])
+  @@index([date])
+  @@index([type])
+  @@index([paymentMode])
+  @@index([partyId])
+  @@index([accountId])
+  @@index([createdById])
+}
+
+model JournalEntry {
+  id            String      @id @default(cuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  accountId     String
+  account       Account     @relation(fields: [accountId], references: [id])
+  partyId       String?
+  party         Party?      @relation(fields: [partyId], references: [id])
+  debit         Decimal     @db.Decimal(15, 2) @default(0)
+  credit        Decimal     @db.Decimal(15, 2) @default(0)
+  createdAt     DateTime    @default(now())
+
+  @@index([transactionId])
+  @@index([accountId])
+  @@index([partyId])
+}
+
+model Attachment {
+  id            String      @id @default(cuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  url           String
+  fileName      String
+  fileSize      Int
+  mimeType      String
+  isDeleted     Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+
+  @@index([transactionId])
+}
+
+model CorrectionRequest {
+  id                  String            @id @default(cuid())
+  transactionId       String
+  transaction         Transaction       @relation("TargetTransaction", fields: [transactionId], references: [id])
+  requesterId         String
+  requester           User              @relation("Requester", fields: [requesterId], references: [id])
+  reason              String
+  proposedChanges     Json              // proposed fields JSON
+  attachmentUrl       String?
+  reviewerId          String?
+  reviewer            User?             @relation("Reviewer", fields: [reviewerId], references: [id])
+  rejectionReason     String?
+  status              CorrectionStatus  @default(PENDING)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  @@index([status])
+  @@index([transactionId])
+  @@index([requesterId])
+  @@index([reviewerId])
+}
+
+model AuditLog {
+  id                String         @id // ULID string
+  eventType         AuditEventType
+  entityType        String
+  entityId          String
+  actorId           String
+  actor             User           @relation(fields: [actorId], references: [id])
+  actorRole         String
+  ipAddress         String
+  userAgent         String
+  deviceFingerprint String
+  sessionId         String
+  before            Json?
+  after             Json?
+  reason            String?
+  immutableHash     String
+  timestamp         DateTime       @default(now())
+
+  @@index([timestamp])
+  @@index([actorId])
+  @@index([eventType])
+}
+
+model SystemSettings {
+  id        String   @id @default("default")
+  appName   String   @default("Pehenava")
+  timezone  String   @default("Asia/Kolkata")
+  currency  String   @default("INR")
+  updatedAt DateTime @updatedAt
+}
